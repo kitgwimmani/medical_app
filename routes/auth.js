@@ -55,7 +55,7 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ message: 'User already exists with this email' });
     }
 
-    // Create user
+    // Create user first
     const user = new User({
       email,
       password,
@@ -75,6 +75,8 @@ router.post('/register', async (req, res) => {
         height_cm: profile_data.height_cm,
         weight_kg: profile_data.weight_kg
       });
+      await profile.save();
+      user.patient_profile_id = profile._id;
     } else if (role === 'doctor') {
       profile = new Doctor({
         user_id: user._id,
@@ -82,13 +84,13 @@ router.post('/register', async (req, res) => {
         last_name: profile_data.last_name,
         specialization: profile_data.specialization,
         license_number: profile_data.license_number,
-        contact_number: profile_data.contact_number
+        contact_number: profile_data.contact_number,
+        hospital_affiliation: profile_data.hospital_affiliation
       });
+      await profile.save();
+      user.doctor_profile_id = profile._id;
     }
 
-    // Save profile and user
-    await profile.save();
-    user.profile_id = profile._id;
     user.profile_completed = true;
     await user.save();
 
@@ -167,21 +169,33 @@ router.post('/login', async (req, res) => {
 });
 
 // Get current user profile
+// Enhanced version with profile data
 router.get('/me', auth, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id)
-      .select('-password')
-      .populate('profile_id');
-
+    const user = await User.findById(req.user.id).select('-password');
+    
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
+    let profileData = null;
+    
+    // Populate profile data based on role
+    if (user.role === 'patient' && user.patient_profile_id) {
+      profileData = await Patient.findById(user.patient_profile_id);
+    } else if (user.role === 'doctor' && user.doctor_profile_id) {
+      profileData = await Doctor.findById(user.doctor_profile_id);
+    }
+
     res.json({
       message: 'User profile retrieved successfully',
-      data: user
+      data: {
+        user,
+        profile: profileData
+      }
     });
   } catch (error) {
+    console.error('Error in /me endpoint:', error);
     res.status(500).json({ message: error.message });
   }
 });

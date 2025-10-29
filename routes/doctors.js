@@ -1,5 +1,6 @@
 // routes/doctors.js
 const express = require('express');
+const mongoose = require('mongoose'); // Add this import
 const router = express.Router();
 const Doctor = require('../models/Doctor');
 const Patient = require('../models/Patient');
@@ -214,7 +215,7 @@ router.delete('/patients/:patientId', auth, async (req, res) => {
   }
 });
 
-// Get patient summary for doctor
+// Get patient summary for doctor - FIXED VERSION
 router.get('/patients/:patientId/summary', auth, async (req, res) => {
   try {
     const { patientId } = req.params;
@@ -253,6 +254,7 @@ router.get('/patients/:patientId/summary', auth, async (req, res) => {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
+    // Fixed aggregation query
     const adherenceStats = await Medication.aggregate([
       {
         $match: {
@@ -306,6 +308,7 @@ router.get('/patients/:patientId/summary', auth, async (req, res) => {
       }
     });
   } catch (error) {
+    console.error('Error in patient summary:', error);
     res.status(500).json({ message: error.message });
   }
 });
@@ -359,7 +362,7 @@ router.get('/patients/search', auth, async (req, res) => {
   }
 });
 
-// Get doctor's dashboard statistics
+// Get doctor's dashboard statistics - FIXED VERSION
 router.get('/dashboard', auth, async (req, res) => {
   try {
     const thirtyDaysAgo = new Date();
@@ -451,6 +454,7 @@ router.get('/dashboard', auth, async (req, res) => {
       }
     });
   } catch (error) {
+    console.error('Error in dashboard:', error);
     res.status(500).json({ message: error.message });
   }
 });
