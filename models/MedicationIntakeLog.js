@@ -2,33 +2,54 @@
 const mongoose = require('mongoose');
 
 const medicationIntakeLogSchema = new mongoose.Schema({
-  medication_schedule_id: {
+  medication_id: {
     type: mongoose.Schema.Types.ObjectId,
-    required: true,
-    ref: 'MedicationSchedule'
+    ref: 'Medication',
+    required: true
   },
   patient_id: {
     type: mongoose.Schema.Types.ObjectId,
-    required: true,
-    ref: 'Patient'
+    ref: 'Patient',
+    required: true
   },
-  scheduled_time: {
+  taken_at: {
     type: Date,
     required: true
   },
-  taken_at: Date,
   status: {
     type: String,
-    enum: ['pending', 'taken', 'missed', 'skipped'],
-    default: 'pending'
+    required: true,
+    enum: ['taken', 'missed', 'skipped', 'partial'],
+    default: 'taken'
   },
-  notes: String
+  dosage_taken: {
+    type: String,
+    required: true
+  },
+  notes: {
+    type: String,
+    default: ''
+  },
+  side_effects: [{
+    type: String,
+    trim: true
+  }],
+  recorded_by: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  recorded_at: {
+    type: Date,
+    default: Date.now
+  }
 }, {
   timestamps: true
 });
 
-medicationIntakeLogSchema.index({ patient_id: 1, scheduled_time: -1 });
-medicationIntakeLogSchema.index({ medication_schedule_id: 1 });
-medicationIntakeLogSchema.index({ status: 1, scheduled_time: 1 });
+// Index for better query performance
+medicationIntakeLogSchema.index({ medication_id: 1, taken_at: -1 });
+medicationIntakeLogSchema.index({ patient_id: 1, taken_at: -1 });
+medicationIntakeLogSchema.index({ taken_at: -1 });
 
 module.exports = mongoose.model('MedicationIntakeLog', medicationIntakeLogSchema);

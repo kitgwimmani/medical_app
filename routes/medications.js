@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const router = express.Router();
 const Medication = require('../models/Medication');
 const Patient = require('../models/Patient'); // Add this import
+const MedicationIntakeLog = require('../models/MedicationIntakeLog');
 const { auth } = require('../middleware/auth');
 
 // Add new medication
@@ -274,5 +275,254 @@ async function checkMedicationAccess(user, patientId) {
     return false;
   }
 }
+
+router.post('/:medicationId/intake', auth, async (req, res) => {
+  try {
+    const { medicationId } = req.params;
+    const {
+      taken_at,
+      status = 'taken',
+      notes = '',
+      dosage_taken,
+      side_effects = []
+    } = req.body;
+
+    // Validate required fields
+    if (!taken_at) {
+      return res.status(400).json({
+        message: 'Missing required field: taken_at'
+      });
+    }
+
+    // Validate status
+    const validStatuses = ['taken', 'missed', 'skipped', 'partial'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        message: `Invalid status. Must be one of: ${validStatuses.join(', ')}`
+      });
+    }
+
+    // Find the medication
+    const medication = await Medication.findById(medicationId);
+    if (!medication) {
+      return res.status(404).json({
+        message: 'Medication not found'
+      });
+    }
+
+    // Check access to this medication
+    const hasAccess = await checkMedicationAccess(req.user, medication.patient_id.toString());
+    if (!hasAccess) {
+      return res.status(403).json({ 
+        message: 'Access denied. You do not have permission to record intake for this medication.' 
+      });
+    }
+
+    // Create intake log
+    const intakeLog = new MedicationIntakeLog({
+      medication_id: medicationId,
+      patient_id: medication.patient_id,
+      taken_at: new Date(taken_at),
+      status,
+      notes,
+      dosage_taken: dosage_taken || medication.dosage,
+      side_effects,
+      recorded_by: req.user.id,
+      recorded_at: new Date()
+    });
+
+    const savedLog = await intakeLog.save();
+
+    // Populate the response
+    const populatedLog = await MedicationIntakeLog.findById(savedLog._id)
+      .populate('medication_id', 'name dosage form instructions')
+      .populate('patient_id', 'name email')
+      .populate('recorded_by', 'name role');
+
+    res.status(201).json({
+      message: `Medication intake recorded as ${status}`,
+      data: populatedLog
+    });
+
+  } catch (error) {
+    console.error('Error recording medication intake:', error);
+    res.status(500).json({ 
+      message: 'Failed to record medication intake',
+      error: error.message 
+    });
+  }
+});
+
+// Get medication intake history
+router.get('/:medicationId/intake', auth, async (req, res) => {
+  try {
+    const { medicationId } = req.params;
+    const { 
+      startDate, 
+      endDate, 
+      status,
+      page = 1, 
+      limit = 20 
+    } = req.query;
+
+    // Find the medication to check access
+    const medication = await Medication.findById(medicationId);
+    if (!medication) {
+      return res.status(404).json({
+        message: 'Medication not found'
+      });
+    }
+
+    // Check access
+    const hasAccess = await checkMedicationAccess(req.user, medication.patient_id.toString());
+    if (!hasAccess) {
+      return res.status(403).json({ 
+        message: 'Access denied.' 
+      });
+    }
+
+    // Build query
+    const query = { medication_id: medicationId };
+    
+    // Date range filter
+    if (startDate || endDate) {
+      query.taken_at = {};
+      if (startDate) query.taken_at.$gte = new Date(startDate);
+      if (endDate) query.taken_at.$lte = new Date(endDate);
+    }
+
+    // Status filter
+    if (status) {
+      query.status = status;
+    }
+
+    // Pagination
+    const skip = (page - 1) * limit;
+
+    const intakeLogs = await MedicationIntakeLog.find(query)
+      .populate('medication_id', 'name dosage form instructions')
+      .populate('patient_id', 'name email')
+      .populate('recorded_by', 'name role')
+      .sort({ taken_at: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await MedicationIntakeLog.countDocuments(query);
+
+    res.json({
+      message: 'Medication intake history retrieved successfully',
+      data: intakeLogs,
+      pagination: {
+        current: parseInt(page),
+        pages: Math.ceil(total / limit),
+        total,
+        limit: parseInt(limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('Error getting medication intake history:', error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Update medication intake record
+router.patch('/intake/:logId', auth, async (req, res) => {
+  try {
+    const { logId } = req.params;
+    const {
+      taken_at,
+      status,
+      notes,
+      dosage_taken,
+      side_effects
+    } = req.body;
+
+    // Find the intake log
+    const intakeLog = await MedicationIntakeLog.findById(logId)
+      .populate('medication_id');
+    
+    if (!intakeLog) {
+      return res.status(404).json({
+        message: 'Intake log not found'
+      });
+    }
+
+    // Check access
+    const hasAccess = await checkMedicationAccess(req.user, intakeLog.patient_id.toString());
+    if (!hasAccess) {
+      return res.status(403).json({ 
+        message: 'Access denied.' 
+      });
+    }
+
+    // Update fields
+    const updateFields = {};
+    if (taken_at) updateFields.taken_at = new Date(taken_at);
+    if (status) updateFields.status = status;
+    if (notes !== undefined) updateFields.notes = notes;
+    if (dosage_taken) updateFields.dosage_taken = dosage_taken;
+    if (side_effects) updateFields.side_effects = side_effects;
+    
+    updateFields.updated_at = new Date();
+
+    const updatedLog = await MedicationIntakeLog.findByIdAndUpdate(
+      logId,
+      updateFields,
+      { new: true, runValidators: true }
+    ).populate('medication_id', 'name dosage form instructions')
+     .populate('patient_id', 'name email')
+     .populate('recorded_by', 'name role');
+
+    res.json({
+      message: 'Medication intake record updated successfully',
+      data: updatedLog
+    });
+
+  } catch (error) {
+    console.error('Error updating medication intake:', error);
+    res.status(500).json({ 
+      message: 'Failed to update medication intake record',
+      error: error.message 
+    });
+  }
+});
+
+// Delete medication intake record
+router.delete('/intake/:logId', auth, async (req, res) => {
+  try {
+    const { logId } = req.params;
+
+    // Find the intake log
+    const intakeLog = await MedicationIntakeLog.findById(logId);
+    
+    if (!intakeLog) {
+      return res.status(404).json({
+        message: 'Intake log not found'
+      });
+    }
+
+    // Check access
+    const hasAccess = await checkMedicationAccess(req.user, intakeLog.patient_id.toString());
+    if (!hasAccess) {
+      return res.status(403).json({ 
+        message: 'Access denied.' 
+      });
+    }
+
+    await MedicationIntakeLog.findByIdAndDelete(logId);
+
+    res.json({
+      message: 'Medication intake record deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Error deleting medication intake:', error);
+    res.status(500).json({ 
+      message: 'Failed to delete medication intake record',
+      error: error.message 
+    });
+  }
+});
 
 module.exports = router;
