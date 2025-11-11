@@ -18,8 +18,7 @@ router.post('/', auth, validateVitalSigns, async (req, res) => {
 
     await vitalSigns.save();
     
-    // Check thresholds and trigger alerts if needed
-    await checkVitalThresholds(vitalSigns);
+   
 
     res.status(201).json({
       message: 'Vital signs recorded successfully',
@@ -37,8 +36,20 @@ router.get('/patient/:patientId', auth, async (req, res) => {
     const { patientId } = req.params;
     const { page = 1, limit = 10, startDate, endDate } = req.query;
 
-    // Convert string parameter to ObjectId for query
-    const query = { patient_id: new mongoose.Types.ObjectId(patientId) };
+    // Query for both ObjectId and string formats
+    let query;
+    try {
+      const objectId = new mongoose.Types.ObjectId(patientId);
+      query = { 
+        $or: [
+          { patient_id: objectId },
+          { patient_id: patientId }
+        ]
+      };
+    } catch (error) {
+      // If not a valid ObjectId, just query as string
+      query = { patient_id: patientId };
+    }
     
     // Date range filter
     if (startDate || endDate) {

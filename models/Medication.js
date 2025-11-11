@@ -4,13 +4,13 @@ const mongoose = require('mongoose');
 const medicationSchema = new mongoose.Schema({
   patient_id: {
     type: mongoose.Schema.Types.ObjectId,
-    required: true,
-    ref: 'Patient'
+    ref: 'Patient',
+    required: true
   },
   prescribed_by: {
     type: mongoose.Schema.Types.ObjectId,
-    required: true,
-    ref: 'Doctor'
+    ref: 'Doctor',
+    default: null
   },
   name: {
     type: String,
@@ -23,19 +23,25 @@ const medicationSchema = new mongoose.Schema({
   },
   form: {
     type: String,
-    enum: ['tablet', 'capsule', 'liquid', 'injection', 'cream', 'inhaler'],
-    required: true
+    required: true,
+    enum: ['tablet', 'capsule', 'liquid', 'injection', 'cream', 'inhaler']
   },
   frequency: {
     type: String,
     required: true
   },
-  instructions: String,
+  instructions: {
+    type: String,
+    default: ''
+  },
   start_date: {
     type: Date,
     required: true
   },
-  end_date: Date,
+  end_date: {
+    type: Date,
+    default: null
+  },
   is_active: {
     type: Boolean,
     default: true
@@ -44,7 +50,6 @@ const medicationSchema = new mongoose.Schema({
   timestamps: true
 });
 
-medicationSchema.index({ patient_id: 1, is_active: 1 });
-medicationSchema.index({ prescribed_by: 1 });
+medicationSchema.index({ patient_id: 1, is_active: 1, start_date: 1, end_date: 1 });
 
 module.exports = mongoose.model('Medication', medicationSchema);

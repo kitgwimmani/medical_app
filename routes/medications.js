@@ -1,379 +1,253 @@
-// routes/notifications.js - COMPLETE TEMPORARY VERSION
+// routes/medications.js - Complete version with imports
 const express = require('express');
 const mongoose = require('mongoose');
 const router = express.Router();
-const MedicationIntakeLog = require('../models/MedicationIntakeLog');
-const VitalSigns = require('../models/VitalSigns');
-const VitalThresholds = require('../models/VitalThresholds');
-const Patient = require('../models/Patient');
-const Doctor = require('../models/Doctor');
+const Medication = require('../models/Medication');
+const Patient = require('../models/Patient'); // Add this import
 const { auth } = require('../middleware/auth');
 
-// Get all notifications for a patient
-router.get('/patient/:patientId', auth, async (req, res) => {
+// Add new medication
+router.post('/', auth, async (req, res) => {
   try {
-    const { patientId } = req.params;
-    const { type, page = 1, limit = 20, unreadOnly } = req.query;
+    const {
+      patient_id,
+      doctor_id,
+      name,
+      dosage,
+      form,
+      frequency,
+      instructions,
+      start_date,
+      end_date
+    } = req.body;
 
-    // Check access
-    const hasAccess = await checkNotificationAccess(req.user, patientId);
-    if (!hasAccess) {
-      return res.status(403).json({ 
-        message: 'Access denied. You do not have permission to view these notifications.' 
+    // Validate required fields
+    if (!patient_id || !name || !dosage || !form || !frequency || !start_date) {
+      return res.status(400).json({
+        message: 'Missing required fields: patient_id, name, dosage, form, frequency, and start_date are required'
       });
     }
 
-    // TEMPORARY: Return sample notifications
-    const sampleNotifications = [
-      {
-        _id: '1',
-        type: 'medication_reminder',
-        title: 'Medication Due',
-        message: 'Time to take Lisinopril 10mg',
-        read: false,
-        created_at: new Date()
-      },
-      {
-        _id: '2', 
-        type: 'vital_alert',
-        title: 'Vital Sign Alert',
-        message: 'Blood pressure reading is high',
-        read: true,
-        created_at: new Date(Date.now() - 2 * 60 * 60 * 1000) // 2 hours ago
-      }
-    ];
-
-    // Filter by type if specified
-    let filteredNotifications = sampleNotifications;
-    if (type) {
-      filteredNotifications = sampleNotifications.filter(notification => 
-        notification.type === type
-      );
+    // Validate patient_id format
+    if (!mongoose.Types.ObjectId.isValid(patient_id)) {
+      return res.status(400).json({
+        message: 'Invalid patient_id format'
+      });
     }
 
-    // Filter by read status if specified
-    if (unreadOnly === 'true') {
-      filteredNotifications = filteredNotifications.filter(notification => 
-        !notification.read
-      );
+    // Validate doctor_id format if provided
+    if (doctor_id && !mongoose.Types.ObjectId.isValid(doctor_id)) {
+      return res.status(400).json({
+        message: 'Invalid doctor_id format'
+      });
     }
 
-    // Simple pagination
-    const startIndex = (page - 1) * limit;
-    const endIndex = page * limit;
-    const paginatedNotifications = filteredNotifications.slice(startIndex, endIndex);
+    // Create medication
+    const medication = new Medication({
+      patient_id: new mongoose.Types.ObjectId(patient_id),
+      prescribed_by: doctor_id ? new mongoose.Types.ObjectId(doctor_id) : null,
+      name,
+      dosage,
+      form,
+      frequency,
+      instructions: instructions || '',
+      start_date: new Date(start_date),
+      end_date: end_date ? new Date(end_date) : null,
+      is_active: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
 
-    res.json({
-      message: 'Notifications retrieved successfully',
-      data: paginatedNotifications,
-      pagination: {
-        current: parseInt(page),
-        pages: Math.ceil(filteredNotifications.length / limit),
-        total: filteredNotifications.length,
-        unread_count: filteredNotifications.filter(n => !n.read).length
-      }
+    const savedMedication = await medication.save();
+
+    // Populate the response with medication details
+    const populatedMedication = await Medication.findById(savedMedication._id)
+      .populate('patient_id', 'name email')
+      .populate('prescribed_by', 'name specialty');
+
+    res.status(201).json({
+      message: 'Medication added successfully',
+      data: populatedMedication
     });
 
   } catch (error) {
-    console.error('Error getting notifications:', error);
-    res.status(500).json({ message: error.message });
+    console.error('Error adding medication:', error);
+    res.status(500).json({ 
+      message: 'Failed to add medication',
+      error: error.message 
+    });
   }
 });
 
-// Get due medication reminders
-router.get('/medication-reminders/:patientId', auth, async (req, res) => {
+// Get due medications
+router.get('/due/:patientId', auth, async (req, res) => {
   try {
     const { patientId } = req.params;
-    const { hoursAhead = 24 } = req.query;
+    const { hoursAhead = 24, date } = req.query;
 
     // Check access
-    const hasAccess = await checkNotificationAccess(req.user, patientId);
+    const hasAccess = await checkMedicationAccess(req.user, patientId);
     if (!hasAccess) {
       return res.status(403).json({ 
-        message: 'Access denied. You do not have permission to view these reminders.' 
+        message: 'Access denied. You do not have permission to view these medications.' 
       });
     }
 
+    // Calculate time range
     const now = new Date();
-    const futureTime = new Date(now.getTime() + (hoursAhead * 60 * 60 * 1000));
+    const targetDate = date ? new Date(date) : now;
+    const futureTime = new Date(targetDate.getTime() + (hoursAhead * 60 * 60 * 1000));
 
-    const dueMedications = await MedicationIntakeLog.find({
+    // Get active medications for the patient
+    const activeMedications = await Medication.find({
       patient_id: patientId,
-      scheduled_time: { $lte: futureTime, $gte: now },
-      status: 'pending'
-    })
-    .populate({
-      path: 'medication_schedule_id',
-      populate: {
-        path: 'medication_id',
-        model: 'Medication',
-        select: 'name dosage form instructions'
-      }
-    })
-    .sort({ scheduled_time: 1 });
-
-    const reminders = dueMedications.map(log => ({
-      _id: log._id,
-      type: 'medication_reminder',
-      title: 'Medication Due',
-      message: `Time to take ${log.medication_schedule_id.medication_id.name} ${log.medication_schedule_id.medication_id.dosage}`,
-      medication_info: {
-        name: log.medication_schedule_id.medication_id.name,
-        dosage: log.medication_schedule_id.medication_id.dosage,
-        form: log.medication_schedule_id.medication_id.form,
-        instructions: log.medication_schedule_id.medication_id.instructions
-      },
-      scheduled_time: log.scheduled_time,
-      urgency: getReminderUrgency(log.scheduled_time),
-      actions: ['mark_taken', 'snooze', 'skip']
-    }));
-
-    res.json({
-      message: 'Medication reminders retrieved successfully',
-      data: reminders
+      is_active: true,
+      start_date: { $lte: futureTime },
+      $or: [
+        { end_date: null },
+        { end_date: { $gte: now } }
+      ]
     });
-  } catch (error) {
-    console.error('Error getting medication reminders:', error);
-    res.status(500).json({ message: error.message });
-  }
-});
 
-// Get vital signs alerts
-router.get('/vital-alerts/:patientId', auth, async (req, res) => {
-  try {
-    const { patientId } = req.params;
-    const { days = 7 } = req.query;
-
-    // Check access
-    const hasAccess = await checkNotificationAccess(req.user, patientId);
-    if (!hasAccess) {
-      return res.status(403).json({ 
-        message: 'Access denied. You do not have permission to view these alerts.' 
+    if (!activeMedications.length) {
+      return res.json({
+        message: 'No active medications found',
+        data: []
       });
     }
 
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - parseInt(days));
+    // Calculate due medications based on frequency
+    const dueMedications = [];
+    
+    for (const medication of activeMedications) {
+      const medicationSchedule = calculateMedicationSchedule(medication, targetDate, parseInt(hoursAhead));
+      
+      if (medicationSchedule.length > 0) {
+        dueMedications.push({
+          medication_id: medication._id,
+          name: medication.name,
+          dosage: medication.dosage,
+          form: medication.form,
+          instructions: medication.instructions,
+          frequency: medication.frequency,
+          due_times: medicationSchedule,
+          urgency: getMedicationUrgency(medicationSchedule[0]?.nextDoseTime),
+          total_doses: medicationSchedule.length
+        });
+      }
+    }
 
-    // Get vital thresholds for patient
-    const thresholds = await VitalThresholds.find({ patient_id: patientId });
+    // Sort by urgency and next dose time
+    dueMedications.sort((a, b) => {
+      const urgencyOrder = { high: 0, medium: 1, low: 2 };
+      if (urgencyOrder[a.urgency] !== urgencyOrder[b.urgency]) {
+        return urgencyOrder[a.urgency] - urgencyOrder[b.urgency];
+      }
+      return new Date(a.due_times[0].nextDoseTime) - new Date(b.due_times[0].nextDoseTime);
+    });
 
-    // Get recent vital signs
-    const recentVitals = await VitalSigns.find({
-      patient_id: patientId,
-      recorded_at: { $gte: startDate }
-    })
-    .sort({ recorded_at: -1 });
-
-    const alerts = [];
-
-    for (const vital of recentVitals) {
-      for (const threshold of thresholds) {
-        const value = vital[threshold.parameter];
-        if (value !== undefined && value !== null) {
-          const isOutOfRange = (threshold.min_value && value < threshold.min_value) ||
-                              (threshold.max_value && value > threshold.max_value);
-          
-          if (isOutOfRange) {
-            alerts.push({
-              _id: `${vital._id}_${threshold.parameter}`,
-              type: 'vital_alert',
-              title: threshold.is_critical ? 'Critical Vital Alert' : 'Vital Sign Alert',
-              message: `${formatParameterName(threshold.parameter)} is ${value} (normal range: ${threshold.min_value}-${threshold.max_value})`,
-              vital_info: {
-                parameter: threshold.parameter,
-                value: value,
-                min_threshold: threshold.min_value,
-                max_threshold: threshold.max_value,
-                recorded_at: vital.recorded_at,
-                is_critical: threshold.is_critical
-              },
-              recorded_at: vital.recorded_at,
-              urgency: threshold.is_critical ? 'high' : 'medium',
-              actions: ['acknowledge', 'view_details', 'contact_doctor']
-            });
-          }
+    res.json({
+      message: 'Due medications retrieved successfully',
+      data: dueMedications,
+      summary: {
+        total_due: dueMedications.length,
+        total_doses: dueMedications.reduce((sum, med) => sum + med.total_doses, 0),
+        time_range: {
+          from: targetDate.toISOString(),
+          to: futureTime.toISOString(),
+          hours_ahead: parseInt(hoursAhead)
         }
       }
-    }
-
-    // Remove duplicates and sort
-    const uniqueAlerts = alerts.filter((alert, index, self) =>
-      index === self.findIndex(a => a._id === alert._id)
-    ).sort((a, b) => {
-      if (a.urgency === 'high' && b.urgency !== 'high') return -1;
-      if (b.urgency === 'high' && a.urgency !== 'high') return 1;
-      return new Date(b.recorded_at) - new Date(a.recorded_at);
     });
 
-    res.json({
-      message: 'Vital alerts retrieved successfully',
-      data: uniqueAlerts
-    });
   } catch (error) {
-    console.error('Error getting vital alerts:', error);
+    console.error('Error getting due medications:', error);
     res.status(500).json({ message: error.message });
   }
 });
 
-// Mark notification as read (temporary - just returns success)
-router.patch('/:notificationId/read', auth, async (req, res) => {
-  try {
-    res.json({
-      message: 'Notification marked as read (temporary implementation)',
-      data: {
-        _id: req.params.notificationId,
-        read: true,
-        read_at: new Date()
-      }
-    });
-  } catch (error) {
-    console.error('Error marking notification as read:', error);
-    res.status(400).json({ message: error.message });
-  }
-});
+// Helper function to calculate medication schedule based on frequency
+function calculateMedicationSchedule(medication, startDate, hoursAhead) {
+  const schedule = [];
+  const now = new Date();
+  const endTime = new Date(startDate.getTime() + (hoursAhead * 60 * 60 * 1000));
+  
+  const frequency = medication.frequency.toLowerCase();
+  let timesPerDay = 1;
+  let intervals = [];
 
-// Mark all notifications as read (temporary)
-router.patch('/patient/:patientId/read-all', auth, async (req, res) => {
-  try {
-    // Check access
-    const hasAccess = await checkNotificationAccess(req.user, req.params.patientId);
-    if (!hasAccess) {
-      return res.status(403).json({ 
-        message: 'Access denied.' 
+  // Parse frequency to determine dosing times
+  if (frequency.includes('once daily') || frequency.includes('once a day')) {
+    timesPerDay = 1;
+    intervals = ['08:00']; // Default morning dose
+  } else if (frequency.includes('twice daily') || frequency.includes('two times daily')) {
+    timesPerDay = 2;
+    intervals = ['08:00', '20:00']; // Morning and evening
+  } else if (frequency.includes('three times daily') || frequency.includes('three times a day')) {
+    timesPerDay = 3;
+    intervals = ['08:00', '14:00', '20:00']; // Morning, afternoon, evening
+  } else if (frequency.includes('four times daily')) {
+    timesPerDay = 4;
+    intervals = ['06:00', '12:00', '18:00', '22:00'];
+  } else if (frequency.includes('every') && frequency.includes('hours')) {
+    // Parse "every X hours" frequency
+    const hoursMatch = frequency.match(/every\s+(\d+)\s+hours?/);
+    if (hoursMatch) {
+      const hourInterval = parseInt(hoursMatch[1]);
+      timesPerDay = Math.floor(24 / hourInterval);
+      intervals = [];
+      for (let i = 0; i < timesPerDay; i++) {
+        const hour = (i * hourInterval) % 24;
+        intervals.push(`${hour.toString().padStart(2, '0')}:00`);
+      }
+    }
+  } else {
+    // Default to once daily
+    timesPerDay = 1;
+    intervals = ['08:00'];
+  }
+
+  // Generate due times for the next 24 hours (or specified hoursAhead)
+  for (const timeStr of intervals) {
+    const [hours, minutes] = timeStr.split(':').map(Number);
+    const doseTime = new Date(startDate);
+    doseTime.setHours(hours, minutes, 0, 0);
+
+    // If the dose time is in the past for today, schedule for tomorrow
+    if (doseTime < now) {
+      doseTime.setDate(doseTime.getDate() + 1);
+    }
+
+    // Check if dose time is within the requested time range
+    if (doseTime <= endTime && doseTime >= startDate) {
+      schedule.push({
+        nextDoseTime: doseTime.toISOString(),
+        scheduledTime: timeStr,
+        status: 'pending',
+        isOverdue: doseTime < now
       });
     }
-
-    res.json({
-      message: 'All notifications marked as read (temporary implementation)',
-      data: { modified_count: 0 }
-    });
-  } catch (error) {
-    console.error('Error marking all notifications as read:', error);
-    res.status(400).json({ message: error.message });
   }
-});
 
-// Other endpoints with temporary implementations...
-router.delete('/:notificationId', auth, async (req, res) => {
-  res.json({ message: 'Notification deleted (temporary implementation)' });
-});
+  return schedule;
+}
 
-router.delete('/patient/:patientId/clear-all', auth, async (req, res) => {
-  // Check access
-  const hasAccess = await checkNotificationAccess(req.user, req.params.patientId);
-  if (!hasAccess) {
-    return res.status(403).json({ message: 'Access denied.' });
-  }
-  res.json({ message: 'All notifications cleared (temporary implementation)', data: { deleted_count: 0 } });
-});
+// Helper function to determine medication urgency
+function getMedicationUrgency(nextDoseTime) {
+  if (!nextDoseTime) return 'low';
+  
+  const now = new Date();
+  const doseTime = new Date(nextDoseTime);
+  const timeDiff = doseTime - now;
+  const minutesDiff = timeDiff / (1000 * 60);
 
-// Get notification preferences
-router.get('/preferences/:patientId', auth, async (req, res) => {
-  try {
-    // Check access
-    const hasAccess = await checkNotificationAccess(req.user, req.params.patientId);
-    if (!hasAccess) {
-      return res.status(403).json({ message: 'Access denied.' });
-    }
+  if (minutesDiff <= 0) return 'high'; // Overdue
+  if (minutesDiff <= 30) return 'medium'; // Due within 30 minutes
+  return 'low'; // Due later
+}
 
-    const defaultPreferences = {
-      medication_reminders: {
-        enabled: true,
-        push_notifications: true,
-        email_notifications: false,
-        sms_notifications: false,
-        advance_notice_minutes: 30,
-        snooze_duration_minutes: 15
-      },
-      vital_alerts: {
-        enabled: true,
-        push_notifications: true,
-        email_notifications: true,
-        sms_notifications: true,
-        critical_alerts_only: false
-      }
-    };
-
-    res.json({
-      message: 'Notification preferences retrieved successfully',
-      data: defaultPreferences
-    });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-});
-
-// Update notification preferences
-router.put('/preferences/:patientId', auth, async (req, res) => {
-  try {
-    // Check access
-    const hasAccess = await checkNotificationAccess(req.user, req.params.patientId);
-    if (!hasAccess) {
-      return res.status(403).json({ message: 'Access denied.' });
-    }
-
-    res.json({
-      message: 'Notification preferences updated successfully',
-      data: req.body
-    });
-  } catch (error) {
-    res.status(400).json({ message: error.message });
-  }
-});
-
-// Get unread notification count
-router.get('/patient/:patientId/unread-count', auth, async (req, res) => {
-  try {
-    // Check access
-    const hasAccess = await checkNotificationAccess(req.user, req.params.patientId);
-    if (!hasAccess) {
-      return res.status(403).json({ message: 'Access denied.' });
-    }
-
-    res.json({
-      message: 'Unread count retrieved successfully',
-      data: { unread_count: 0 }
-    });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-});
-
-// Snooze medication reminder
-router.post('/medication-reminders/:logId/snooze', auth, async (req, res) => {
-  try {
-    const { logId } = req.params;
-    const { snooze_minutes = 15 } = req.body;
-
-    const log = await MedicationIntakeLog.findById(logId).populate('medication_schedule_id');
-    if (!log) {
-      return res.status(404).json({ message: 'Medication log not found' });
-    }
-
-    // Check access
-    const hasAccess = await checkNotificationAccess(req.user, log.patient_id.toString());
-    if (!hasAccess) {
-      return res.status(403).json({ message: 'Access denied.' });
-    }
-
-    const snoozedTime = new Date(log.scheduled_time);
-    snoozedTime.setMinutes(snoozedTime.getMinutes() + parseInt(snooze_minutes));
-
-    res.json({
-      message: `Medication reminder snoozed for ${snooze_minutes} minutes`,
-      data: {
-        original_time: log.scheduled_time,
-        snoozed_until: snoozedTime
-      }
-    });
-  } catch (error) {
-    res.status(400).json({ message: error.message });
-  }
-});
-
-// HELPER FUNCTIONS
-async function checkNotificationAccess(user, patientId) {
+// Helper function to check medication access
+async function checkMedicationAccess(user, patientId) {
   try {
     if (user.role === 'patient') {
       const patient = await Patient.findOne({ user_id: user.id });
@@ -385,34 +259,20 @@ async function checkNotificationAccess(user, patientId) {
         'doctors.is_active': true
       });
       return !!patient;
+    } else if (user.role === 'caregiver') {
+      // Add caregiver logic if needed
+      const patient = await Patient.findOne({
+        _id: patientId,
+        'caregivers.caregiver_id': user.id,
+        'caregivers.is_active': true
+      });
+      return !!patient;
     }
     return false;
   } catch (error) {
-    console.error('Error checking notification access:', error);
+    console.error('Error checking medication access:', error);
     return false;
   }
-}
-
-function getReminderUrgency(scheduledTime) {
-  const now = new Date();
-  const timeDiff = scheduledTime - now;
-  const minutesDiff = timeDiff / (1000 * 60);
-  if (minutesDiff <= 0) return 'high';
-  if (minutesDiff <= 15) return 'medium';
-  return 'low';
-}
-
-function formatParameterName(parameter) {
-  const names = {
-    systolic_bp: 'Systolic Blood Pressure',
-    diastolic_bp: 'Diastolic Blood Pressure',
-    heart_rate: 'Heart Rate',
-    respiratory_rate: 'Respiratory Rate',
-    temperature: 'Temperature',
-    oxygen_saturation: 'Oxygen Saturation',
-    blood_glucose: 'Blood Glucose'
-  };
-  return names[parameter] || parameter;
 }
 
 module.exports = router;
