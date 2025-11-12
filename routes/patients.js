@@ -4,6 +4,25 @@ const router = express.Router();
 const Patient = require('../models/Patient');
 const { auth } = require('../middleware/auth');
 
+
+// Get all patients
+// Get all patients
+router.get('/', auth, async (req, res) => {
+  try {
+    const patients = await Patient.find()
+      .populate('doctors.doctor_id', 'first_name last_name specialization')
+      .select('-password'); // Exclude password field for security
+
+    res.json({
+      message: 'Patients retrieved successfully',
+      data: patients,
+      count: patients.length
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 // Get patient profile
 router.get('/:id', auth, async (req, res) => {
   try {
