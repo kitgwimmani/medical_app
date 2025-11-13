@@ -80,19 +80,11 @@ router.post('/', auth, async (req, res) => {
   }
 });
 
-// Get due medications
-router.get('/due/:patientId', auth, async (req, res) => {
+// Get due medications (public access)
+router.get('/due/:patientId', async (req, res) => {
   try {
     const { patientId } = req.params;
     const { hoursAhead = 24, date } = req.query;
-
-    // Check access
-    const hasAccess = await checkMedicationAccess(req.user, patientId);
-    if (!hasAccess) {
-      return res.status(403).json({ 
-        message: 'Access denied. You do not have permission to view these medications.' 
-      });
-    }
 
     // Calculate time range
     const now = new Date();
@@ -166,6 +158,7 @@ router.get('/due/:patientId', auth, async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 });
+
 
 // Helper function to calculate medication schedule based on frequency
 function calculateMedicationSchedule(medication, startDate, hoursAhead) {
